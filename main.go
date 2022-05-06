@@ -7,14 +7,14 @@ import (
 	"github.com/joho/godotenv"
 	"gopkg.in/auth0.v5"
 	"gopkg.in/auth0.v5/management"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
-type RewardfulFriend struct {
-	Id     string
-	Email  string
-	Tokens string
+type DFCustomer struct {
+	Email string
 }
 
 type Result struct {
@@ -38,7 +38,7 @@ func main() {
 	}
 
 	csvContent := ReadCsv(os.Args[1])
-	rwdFriends := createRewardfulFriendsList(csvContent)
+	dfCustomers := createDFCustomerList(csvContent)
 
 	auth0domain := os.Getenv("AUTH0_DOMAIN")
 	auth0client := os.Getenv("AUTH0_CLIENT_ID")
@@ -52,19 +52,19 @@ func main() {
 	start := time.Now()
 	results := make(chan Result)
 	c := time.NewTicker(200 * time.Millisecond)
-	for _, user := range rwdFriends {
+	for _, user := range dfCustomers {
 		go getAuth0UserAndUpdateMetadata(c, m, user, results)
 	}
 	defer c.Stop()
 
-	for range rwdFriends {
+	for range dfCustomers {
 		fmt.Println(<-results)
 	}
 
 	fmt.Printf("Finished in %s", time.Since(start))
 }
 
-func getAuth0UserAndUpdateMetadata(c *time.Ticker, m *management.Management, user RewardfulFriend, results chan Result) {
+func getAuth0UserAndUpdateMetadata(c *time.Ticker, m *management.Management, user DFCustomer, results chan Result) {
 	<-c.C
 
 	res, err := m.User.ListByEmail(user.Email)
@@ -87,14 +87,17 @@ func getAuth0UserAndUpdateMetadata(c *time.Ticker, m *management.Management, use
 	}
 
 	for _, data := range res {
-		uu := &management.User{
-			UserMetadata: map[string]interface{}{
-				"user_id":         data.UserMetadata["user_id"],
-				"rewardful_id":    user.Id,
-				"rewardful_token": user.Tokens,
-			},
-		}
-		err := m.User.Update(auth0.StringValue(data.ID), uu)
+
+		url := "https://" + os.Getenv("AUTH0_DOMAIN") + "/api/v2/users/" + auth0.StringValue(data.ID)
+
+		metadata := strings.NewReader("{\"app_metadata\" : {\"roles\" : [\"DeadlineFunnelAccess\",{\"VomaAccess\": \"Free\"}]}}")
+
+		req, _ := http.NewRequest("PATCH", url, metadata)
+		req.Header.Add("authorization", "Bearer "+os.Getenv("AUTH0_MANAGEMENT_TOKEN"))
+		req.Header.Add("content-type", "application/json")
+
+		_, err := http.DefaultClient.Do(req)
+
 		if err != nil {
 			results <- Result{
 				time.Now().Format(time.RFC1123Z),
@@ -138,23 +141,19 @@ func ReadCsv(path string) [][]string {
 	return data
 }
 
-func createRewardfulFriendsList(data [][]string) []RewardfulFriend {
-	var rewardfulFriendsList []RewardfulFriend
+func createDFCustomerList(data [][]string) []DFCustomer {
+	var DFCustomerList []DFCustomer
 	for i, line := range data {
 		if i > 0 { // omit header line
-			var rec RewardfulFriend
+			var rec DFCustomer
 			for j, field := range line {
 				switch j {
 				case 0:
-					rec.Id = field
-				case 4:
 					rec.Email = field
-				case 11:
-					rec.Tokens = field
 				}
 			}
-			rewardfulFriendsList = append(rewardfulFriendsList, rec)
+			DFCustomerList = append(DFCustomerList, rec)
 		}
 	}
-	return rewardfulFriendsList
+	return DFCustomerList
 }
